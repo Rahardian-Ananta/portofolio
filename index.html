@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gart's 3D Animation Merger & Exporter (Auto-Load)</title>
+    <style>
+        body { margin: 0; background: #1a1a1a; color: white; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; overflow: hidden; }
+        #controls { position: absolute; top: 10px; left: 10px; z-index: 10; background: rgba(0,0,0,0.85); padding: 20px; border-radius: 12px; border: 1px solid #444; width: 280px; box-shadow: 0 4px 15px rgba(0,0,0,0.5); }
+        button { background: #28a745; color: white; border: none; padding: 10px; border-radius: 4px; cursor: pointer; width: 100%; font-weight: bold; margin-top: 10px; transition: 0.3s; }
+        button:hover { background: #218838; }
+        button:disabled { background: #555; cursor: not-allowed; }
+        #status { font-size: 12px; margin-top: 15px; padding: 8px; border-radius: 4px; background: #333; color: #00ff00; text-align: center; }
+        h3 { margin: 0 0 15px 0; font-size: 18px; border-bottom: 1px solid #444; padding-bottom: 5px; }
+        .info { font-size: 11px; color: #aaa; margin-top: 10px; line-height: 1.4; }
+    </style>
+</head>
+<body>
+
+    <div id="controls">
+        <h3>GLB Merger Pro</h3>
+        <p class="info">Memuat secara otomatis:<br>• <b>3d_model.glb</b> (Utama)<br>• <b>animation.glb</b> (Animasi)</p>
+        
+        <button id="exportBtn" disabled>Download Combined GLB</button>
+        <div id="status">Inisialisasi...</div>
+    </div>
+
+    <script src="https://unpkg.com/meshoptimizer@0.21.0/meshopt_decoder.js"></script>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+        import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+        let scene, camera, renderer, controls, mixer;
+        let mainModel = null;
+        let animations = [];
+        const clock = new THREE.Clock();
+
+        const loader = new GLTFLoader();
+        loader.setMeshoptDecoder(MeshoptDecoder);
+
+        function init() {
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x1a1a1a);
+
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.set(0, 1.5, 5);
+
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(window.devicePixelRatio);
+            document.body.appendChild(renderer.domElement);
+
+            controls = new OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true;
+            
+            scene.add(new THREE.AmbientLight(0xffffff, 2));
+            const sun = new THREE.DirectionalLight(0xffffff, 1);
+            sun.position.set(5, 10, 7.5);
+            scene.add(sun);
+
+            animate();
+            
+            // Jalankan proses pemuatan otomatis
+            loadFilesSequentially();
+        }
+
+        async function loadFilesSequentially() {
+            try {
+                updateStatus("Memuat Model Utama (3d_model.glb)...");
+                
+                // 1. Load Model Utama
+                const gltfMain = await loadGLB('3d_model.glb');
+                mainModel = gltfMain.scene;
+                animations = [...gltfMain.animations];
+                scene.add(mainModel);
+
+                const box = new THREE.Box3().setFromObject(mainModel);
+                controls.target.copy(box.getCenter(new THREE.Vector3()));
+                updateStatus("Model Utama Siap. Memuat Animasi...");
+
+                // 2. Load Animasi
+                const gltfAnim = await loadGLB('animation.glb');
+                if (gltfAnim.animations.length > 0) {
+                    animations = [...animations, ...gltfAnim.animations];
+                    
+                    if (mixer) mixer.stopAllAction();
+                    mixer = new THREE.AnimationMixer(mainModel);
+                    const action = mixer.clipAction(gltfAnim.animations[0]);
+                    action.play();
+
+                    document.getElementById('exportBtn').disabled = false;
+                    updateStatus("Semua File Dimuat & Digabung!");
+                } else {
+                    updateStatus("Model Utama Siap (Tidak ada animasi di animation.glb)");
+                }
+
+            } catch (error) {
+                console.error(error);
+                updateStatus("Gagal memuat file! Pastikan file tersedia di folder.");
+            }
+        }
+
+        // Helper function untuk loading GLB dengan Promise
+        function loadGLB(url) {
+            return new Promise((resolve, reject) => {
+                loader.load(url, 
+                    (gltf) => resolve(gltf),
+                    undefined,
+                    (err) => reject(err)
+                );
+            });
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            if (mixer) mixer.update(clock.getDelta());
+            controls.update();
+            renderer.render(scene, camera);
+        }
+
+        // Export Fitur
+        document.getElementById('exportBtn').addEventListener('click', () => {
+            if (!mainModel) return;
+            updateStatus("Exporting...");
+
+            const exporter = new GLTFExporter();
+            const options = {
+                binary: true,
+                animations: animations,
+                truncateDrawRange: false
+            };
+
+            exporter.parse(mainModel, (result) => {
+                const blob = new Blob([result], { type: 'application/octet-stream' });
+                const link = document.createElement('a');
+                link.href = URL.createObjectURL(blob);
+                link.download = 'merged_model.glb';
+                link.click();
+                updateStatus("Download Selesai!");
+            }, (error) => {
+                console.error(error);
+                updateStatus("Export Gagal!");
+            }, options);
+        });
+
+        function updateStatus(msg) {
+            document.getElementById('status').innerText = msg;
+        }
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        init();
+    </script>
+</body>
+</html>
